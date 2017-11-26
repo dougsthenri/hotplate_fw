@@ -1,5 +1,5 @@
 /*
- Firmware da placa de aquecimento
+ Firmware da placa de aquecimento baseada no forno de solda
  
  Atribuições de entradas e saídas:
  PB0 (D8):	MISO do sensor de temperatura
@@ -20,6 +20,8 @@
 #include <util/setbaud.h>
 
 #include <util/delay.h>
+
+#define T_SET 100 //Temperatura a manter
 
 
 // Segundo estágio do temporizador:
@@ -68,10 +70,15 @@ double ts_read() {
 }
 
 
-void print_temp(double t) {
-    char buffer[8];
+// Formatado para o Grapher
+void print_process_data(uint32_t time, double temp) {
+    char buffer[12];
     
-    dtostrf(t, 5, 2, buffer);
+    itoa(time, buffer, 10);
+    for (int i=0; buffer[i] != '\0'; i++)
+        uart_transmit(buffer[i]);
+    uart_transmit('\t');
+    dtostrf(temp, 5, 2, buffer);
     for (int i=0; buffer[i] != '\0'; i++)
         uart_transmit(buffer[i]);
     uart_transmit('\n');
@@ -100,7 +107,7 @@ void reset_timer() {
 void main(void) {
     // Configurar entradas...
     DDRB &= ~(_BV(DDB4));
-//    PORTB |= _BV(PORTB4); //Habilitar pull-up
+    //    PORTB |= _BV(PORTB4); //Habilitar pull-up
     // e saídas
     DDRB |= _BV(DDB3);
     DDRB |= _BV(DDB5);
@@ -142,43 +149,47 @@ void main(void) {
     // e aguardar sua estabilização
     _delay_ms(500);
     
-//    int last;
-//    int c_count = 0;
-    
-    uint8_t s_msg; //Byte recebido pela interface serial
-    
-    // Laço executivo:
+    // Laço executivo
+    uint32_t t = 0;			//Tempo do processo
+    double cur_temp;		//Temperatura atual
+    uint8_t s_msg;			//Byte recebido pela interface serial
+    int8_t p_running = 0;	//Indicador do processo de aquecimento ativo
     while (1) {
         reset_timer(); //Iniciar temporização
-        print_temp(ts_read());
+        
+        if (p_running) {
+            if (p_running == -1) {
+                // Iniciando processo de aquecimento
+                t = 0;
+                p_running = 1;
+            }
+            cur_temp = ts_read();
+            print_process_data(t, cur_temp);
+            if (cur_temp < T_SET) {
+                // Temperatura abaixo do valor ajustado
+                if (!(PINB & _BV(PINB3)))
+                    PORTB |= _BV(PORTB3); //Ligar aquecimento
+            } else if (PINB & _BV(PINB3)) {
+                PORTB &= ~(_BV(PORTB3)); //Desligar aquecimento
+            }
+        }
         
         // Verificar recebimento de mensagem
         if (UCSR0A & _BV(RXC0)) {
             s_msg = UDR0; //Ler a mensagem
-            if (s_msg == ' ')
-                PINB |= _BV(PINB3); //Inverter estado da saída
+            if (s_msg == ' ') {
+                if (p_running) {
+                    // Encerrar o processo de aquecimento
+                    if (PINB & _BV(PINB3))
+                        PORTB &= ~(_BV(PORTB3)); //Desligar aquecimento
+                    p_running = 0;
+                }
+                else
+                    p_running = -1; //Iniciar o processo no ciclo seguinte
+            }
         }
         
         while (elapsed_microseconds() < 1000000); //Aguardar 1 s
-        
-//        print_temp(ts_read());
-//        _delay_ms(1000);
-        
-        // Aguardar a borda de subida
-//        do {
-//            last = PINB & _BV(PINB4) ? 1: 0;
-//        } while ((PINB & _BV(PINB4)) || !last);
-//        c_count++;
-        
-        // Pulsar o gatilho do TRIAC
-//        PORTB |= _BV(PORTB3);
-//        _delay_ms(1);
-//        PORTB &= ~(_BV(PORTB3));
-        
-//        if (c_count >= 60) {
-//            print_temp(c_count); //Informar a contagem de ciclos [HACK]
-//            c_count = 0;
-//        }
-        
+        t++;
     }
 }
