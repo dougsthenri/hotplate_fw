@@ -21,17 +21,24 @@
 
 #include <util/delay.h>
 
-#define T_SET 100 //Temperatura a manter
 
-
-// Segundo estágio do temporizador:
-volatile uint16_t timer0_overflow_count = 0;
+volatile uint16_t timer0_overflow_count = 0; //Segundo estágio do temporizador
 
 
 void uart_transmit(uint8_t c) {
     loop_until_bit_is_set(UCSR0A, UDRE0); //Aguardar a disponibilidade da UART
     UDR0 = c;
     loop_until_bit_is_set(UCSR0A, TXC0); //Aguardar o término da transmissão
+}
+
+
+void print_s(char *str, uint8_t newline) {
+    for (int i = 0; str[i] != '\0'; i++)
+        uart_transmit(str[i]);
+    if (newline) {
+        uart_transmit('\n');
+        uart_transmit('\r');
+    }
 }
 
 
@@ -71,7 +78,7 @@ double ts_read() {
 
 
 // Formatado para o Grapher
-void print_process_data(uint32_t time, double temp) {
+void print_p_readout(uint32_t time, double temp) {
     char buffer[12];
     
     itoa(time, buffer, 10);
@@ -83,6 +90,39 @@ void print_process_data(uint32_t time, double temp) {
         uart_transmit(buffer[i]);
     uart_transmit('\n');
     uart_transmit('\r');
+}
+
+
+double inquire_t_set() {
+    double t = 0.0;
+    uint8_t c = '\0';
+    double decimal = 0;
+
+    print_s("Type the desired temperature: ", 0);
+    do {
+        if (UCSR0A & _BV(RXC0)) {
+            c = UDR0; //Ler o caracter
+            if (c >= '0' && c <= '9') {
+                // Aceitar apenas dígitos...
+                uart_transmit(c); //Ecoar entrada
+                if (decimal > 0) {
+                    // Compondo parte decimal
+                    t += (c - '0') * decimal;
+                    decimal /= 10;
+                } else {
+                    // Compondo parte inteira
+                    t = t * 10 + (c - '0');
+                }
+            } else if (c == '.') {
+                // e ponto
+                uart_transmit(c); //Ecoar entrada
+                decimal = 0.1;
+            }
+        }
+    } while (c != '\r');
+    print_s("", 1);
+    
+    return t;
 }
 
 
@@ -149,11 +189,14 @@ void main(void) {
     // e aguardar sua estabilização
     _delay_ms(500);
     
-    // Laço executivo
+    print_s("Press spacebar to start/stop", 1);
+    
     uint32_t t = 0;			//Tempo do processo
+    double t_set; 			//Temperatura a manter
     double cur_temp;		//Temperatura atual
     uint8_t s_msg;			//Byte recebido pela interface serial
     int8_t p_running = 0;	//Indicador do processo de aquecimento ativo
+    // Laço executivo
     while (1) {
         reset_timer(); //Iniciar temporização
         
@@ -164,8 +207,8 @@ void main(void) {
                 p_running = 1;
             }
             cur_temp = ts_read();
-            print_process_data(t, cur_temp);
-            if (cur_temp < T_SET) {
+            print_p_readout(t, cur_temp);
+            if (cur_temp < t_set) {
                 // Temperatura abaixo do valor ajustado
                 if (!(PINB & _BV(PINB3)))
                     PORTB |= _BV(PORTB3); //Ligar aquecimento
@@ -184,8 +227,10 @@ void main(void) {
                         PORTB &= ~(_BV(PORTB3)); //Desligar aquecimento
                     p_running = 0;
                 }
-                else
+                else {
+                    t_set = inquire_t_set();
                     p_running = -1; //Iniciar o processo no ciclo seguinte
+                }
             }
         }
         
